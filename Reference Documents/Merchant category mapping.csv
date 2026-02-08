@@ -1,0 +1,77 @@
+﻿Keyword Pattern,Expense Type,Merchant Category,Store Name
+AMAZON,Shopping,Departmental Store,Amazon
+RELIANCE MART,Shopping,Departmental Store,Reliance
+SWIGGY,Restaurant,Food,SWIGGY
+ZOMATO,Restaurant,Food,ZOMATO
+DOMINOS,Restaurant,Food,DOMINOS
+PIZZA,Restaurant,Food,PIZZA
+BOOKMYSHOW,Entertainment,Movie,Bookmyshow
+PVR,Entertainment,Movie,PVR
+INOX,Entertainment,Movie,INOX
+UBER,Transport,Cab,Uber
+OLA,Transport,Cab,Ola
+Rapido,Trasnport,Cab,Rapido
+INDIAN OIL,Transport,Fuel,NA
+IOCL,Transport,Fuel,NA
+HPCL,Transport,Fuel,NA
+BPCL,Transport,Fuel,NA
+PAYMENT RECEIVED,Card Payment,CC Bill Payment,?
+SI PAYMENT,Card Payment,CC Bill Payment,?
+BBPS PAYMENT RECEIVED,Card Payment,CC Bill Payment,ICICI Bank
+SMS BASED REDEMPTION,Card Payment,CC Bill Payment,Axis Bank
+Pay By Rewards,Card Payment,CC Bill Payment,Axis Bank
+SPOTIFYINDIA,Entertainment,Music,Spotify
+SPOTIFY,Entertainment,Music,Spotify
+PVR Limited,Entertainment,Movie,PVR
+YOUTUBE,Entertainment,OTT,YouTube
+JAI LAXMI MEDICAL,Health,Medicines,Jai Laxmi Store
+LKST2517,Health,Medicines,Laxmi Medical Hall
+CALIFORNIA BURRITO,Restaurant,Food,Mall
+NAMASTAE HYDERABAD,Restaurant,Food,Namaste Hyd
+City Center Mall Raip,Restaurant,Food,Mall
+APPLE INDIA,Shopping,Electronics Store,Apple Store
+HQ CG AND ORISSA SUB A RAIPUR IN  .,Shopping,Departmental Store,Army Canteen
+RELIANCE DIGITAL,Shopping,Electronics Store,Reliance
+ADITYA BIRLA FASHION,Shopping,Apparel,Pantaloons
+AMAZON MUMBAI IN,Shopping,Departmental Store,Amazon
+AMAZON PAY IN E COMMERC,Shopping,Departmental Store,Amazon
+AMAZON PAY IN GROCERY,Shopping,Departmental Store,Amazon
+AMAZON PAY INDIA PVT LT BANGALORE IN,Shopping,Departmental Store,Amazon
+ANAND JEWELS,Shopping,Jewellery,Anand Jewels
+AT JEWELLERS RAIPUR IN,Shopping,Jewellery,AT Jewels
+"AUG  RELIANCE RETAIL LIMITE, NAVI MUMBAI  DR",Shopping,Departmental Store,Reliance
+WESTSIDE,Shopping,Apparel,WestSide
+BOMBAY SHIRT COMPANY,Shopping,Apparel,Bombay Shirts
+THEDERMA CO,Shopping,Cosmetics,The Derma
+H Q CG AND ORISSA SUB RAIPUR IN  .,Shopping,Departmental Store,Army Canteen
+IND*AMAZON HTTP:,Shopping,Departmental Store,Amazon
+INEXT INNOVATIONS,Shopping,Electronics Store,Apple Store
+IKEA,Shopping,Home Furnishings,Ikea
+LAVIE HYDERABAD,Shopping,Luggage and Leather Goods Stores,Lavie
+M S HEALTH AND GLOW,Shopping,Cosmetics,M S Health & Glow
+DAY TO DAY,Shopping,Departmental Store,Day 2 Day
+RELIANCE RETAIL,Shopping,Departmental Store,Reliance
+GANPATI JEWELLERS,Shopping,Jewellery,Ganpati Jewellers
+PRATHAM GEMS AND JEWEL RAIPUR IN,Shopping,Jewellery,Pratham Jewellers
+RELIANCE SMART,Shopping,Departmental Store,Reliance
+RELIANCE VISION,Shopping,Optician,Reliance Vision
+SHOPPERS STOP,Shopping,Apparel,Shoppers Stop
+SMART BAZAAR,Shopping,Departmental Store,Reliance
+SSAPL INORBIT,Shopping,Shoes,Skechers
+SU HYD GATEWAY MALL,Shopping,Apparel,SU Sarath City Mall
+Zudio,Shopping,Apparel,Zudio
+KANGAN PRIME,Shopping,Departmental Store,kangan Prime
+ZENITH RETAIL,Shopping,Apparel,Zenith Retail
+Sai Krupa Fuels,Transport,Fuel,NA
+FUEL SURCHARGE WAIVER,Transport,Fuel,Waiver
+Abhay Fuels,Transport,Fuel,NA
+FUEL CASHBACK REBATES,Transport,Fuel,Waiver
+BHANSALI Fuels,Transport,Fuel,NA
+ANZAR FUELS,Transport,Fuel,NA
+INDIAN RAILWAY,Transport,Travel,IRCTC
+Ixigo,Transport,Travel,Ixigo
+SWAN SUITES,Travel,Lodging,Swan Suites
+AUG  SURCHARGE WAIVER FOR FUEL TXN  CR,Travel,Fuel,NA
+CCCPL FRONT OFFICE,Travel,Lodging,Novotel
+ENCALM LOUNGE INT T DELHI IN,Travel,Lounge,Airport Lounge
+HOTEL CELEBRATION,Restaurant,Food,Hotel
