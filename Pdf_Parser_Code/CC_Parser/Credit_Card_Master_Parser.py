@@ -19,7 +19,7 @@ PROJECT_DIR = os.path.expanduser(
     "~/Library/CloudStorage/OneDrive-Personal/Personal/Finance/projects/Monthly_Fin_Tracker"
 )
 
-BASE_DIR = os.path.join(PROJECT_DIR, "CC statements")
+BASE_DIR = os.path.join(PROJECT_DIR, "Bank_Statements", "CC_Statements")
 
 OUTPUT_FILE = os.path.join(
     PROJECT_DIR, "Output", "CC_Monthly_Master_Tracker.xlsx"

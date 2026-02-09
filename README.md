@@ -12,8 +12,8 @@ A local-first parser that consolidates credit card statements from multiple bank
 ## Folder Layout
 ```
 Monthly_Fin_Tracker/
-├── CC_Parser_Code/                 # Python parsers + master script
-├── CC statements/                  # Input PDFs (bank/card subfolders)
+├── Pdf_Parser_Code/CC_Parser/                 # Python parsers + master script
+├── Bank_Statements/CC_Statements/                  # Input PDFs (bank/card subfolders)
 ├── Reference Documents/            # Mapping CSVs used during parsing
 ├── Output/                          # Generated Excel output
 ├── Logs/                            # Runtime logs (ignored by git)
@@ -23,14 +23,14 @@ Monthly_Fin_Tracker/
 ```
 
 ## Key Files
-- `CC_Parser_Code/Credit_Card_Master_Parser.py` — main entry point
+- `Pdf_Parser_Code/CC_Parser/Credit_Card_Master_Parser.py` — main entry point
 - `Reference Documents/Merchant category mapping.csv` — categorization map
 - `Reference Documents/Outstanding_Label_Mapping.csv` — outstanding label map
 
 ## Run
 ```bash
 cd /Users/abhishekjain/Library/CloudStorage/OneDrive-Personal/Personal/Finance/projects/Monthly_Fin_Tracker
-python3 CC_Parser_Code/Credit_Card_Master_Parser.py
+python3 Pdf_Parser_Code/CC_Parser/Credit_Card_Master_Parser.py
 ```
 
 ## Output
@@ -42,7 +42,7 @@ python3 CC_Parser_Code/Credit_Card_Master_Parser.py
   - `Credit card summary`
 
 ## Notes
-- `CC statements/`, `Output/`, `Logs/`, `Error/`, `Archive/` are ignored by git.
+- `Bank_Statements/CC_Statements/`, `Output/`, `Logs/`, `Error/`, `Archive/` are ignored by git.
 - Update the mapping CSVs to refine categorization without changing code.
 
 ## Supported Cards
@@ -52,4 +52,4 @@ python3 CC_Parser_Code/Credit_Card_Master_Parser.py
 - Uni (Gold, Gold UPI)
 
 ---
-If you add a new bank/card, place PDFs under `CC statements/<Bank>/<Card>` and add a parser in `CC_Parser_Code/`.
+If you add a new bank/card, place PDFs under `Bank_Statements/CC_Statements/<Bank>/<Card>` and add a parser in `Pdf_Parser_Code/CC_Parser/`.
