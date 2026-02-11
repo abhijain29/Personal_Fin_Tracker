@@ -42,6 +42,16 @@ def parse_amount(value):
         return None
 
 
+def parse_int_like(value):
+    num = parse_amount(value)
+    if num is None:
+        return None
+    try:
+        return int(round(num))
+    except Exception:
+        return None
+
+
 def load_source(source_path):
     df = pd.read_excel(source_path, sheet_name="Passbook Payment History")
     required = ["Date", "Transaction Details", "Tags"]
@@ -52,23 +62,31 @@ def load_source(source_path):
 
 
 def load_paytm_mapping(mapping_path):
-    # Preferred format: Excel with sheet name "PayTm", columns A-F
-    patterns = []
+    # Excel mapping:
+    # - PayTm_1: Tags, Description, Expense Type, Merchant Category
+    # - PayTm_1: account map from columns Your Account -> Value (now F/G as requested)
+    rules = []
     account_map = []
 
     if mapping_path.lower().endswith((".xlsx", ".xlsm", ".xls")):
-        mdf = pd.read_excel(mapping_path, sheet_name="PayTm")
-        for _, row in mdf.iterrows():
-            key = str(row.iloc[0]).strip() if len(row) > 0 and pd.notna(row.iloc[0]) else ""
-            exp = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ""
-            merch = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
-            acc_in = str(row.iloc[4]).strip() if len(row) > 4 and pd.notna(row.iloc[4]) else ""
-            acc_out = str(row.iloc[5]).strip() if len(row) > 5 and pd.notna(row.iloc[5]) else ""
-            if key:
-                patterns.append((key, exp, merch))
+        xl = pd.ExcelFile(mapping_path)
+
+        class_sheet = "PayTm_1" if "PayTm_1" in xl.sheet_names else "PayTm"
+        cdf = pd.read_excel(mapping_path, sheet_name=class_sheet)
+        for _, row in cdf.iterrows():
+            tag = str(row.get("Tags", "")).strip() if pd.notna(row.get("Tags", "")) else ""
+            desc = str(row.get("Description", "")).strip() if pd.notna(row.get("Description", "")) else ""
+            exp = str(row.get("Expense Type", "")).strip() if pd.notna(row.get("Expense Type", "")) else ""
+            merch = str(row.get("Merchant Category", "")).strip() if pd.notna(row.get("Merchant Category", "")) else ""
+            if tag or desc:
+                rules.append((tag, desc, exp, merch))
+
+        for _, row in cdf.iterrows():
+            acc_in = str(row.get("Your Account", "")).strip() if pd.notna(row.get("Your Account", "")) else ""
+            acc_out = str(row.get("Value", "")).strip() if pd.notna(row.get("Value", "")) else ""
             if acc_in and acc_out:
                 account_map.append((acc_in, acc_out))
-        return patterns, account_map
+        return rules, account_map
 
     # Fallback format: CSV with columns Keyword Pattern / Expense Type / Merchant Category
     cdf = pd.read_csv(mapping_path, encoding="utf-8-sig")
@@ -82,23 +100,48 @@ def load_paytm_mapping(mapping_path):
             continue
         exp = str(row.get(exp_col, "")).strip() if exp_col else ""
         merch = str(row.get(mer_col, "")).strip() if mer_col else ""
-        patterns.append((key, exp, merch))
+        rules.append(("", key, exp, merch))
+    return rules, account_map
 
-    return patterns, account_map
+
+def is_partial_match(source_value, rule_value):
+    s = norm(source_value)
+    r = norm(rule_value)
+    if not s or not r:
+        return False
+    return r in s or s in r
 
 
-def match_pattern(txn_text, patterns):
-    t = norm(txn_text)
+def match_paytm1_rule(source_tags, source_desc, rules):
+    # Matching rules:
+    # 1) If rule description is empty -> compare tags only
+    # 2) If rule tags is empty -> compare description only
+    # 3) Else compare both tags and description
     best = None
-    best_len = -1
-    for key, exp, merch in patterns:
-        k = norm(key)
-        if not k:
-            continue
-        if k in t or t in k:
-            if len(k) > best_len:
-                best = (key, exp, merch)
-                best_len = len(k)
+    best_score = -1
+    for rule_tag, rule_desc, exp_type, merch_cat in rules:
+        tag_empty = not norm(rule_tag)
+        desc_empty = not norm(rule_desc)
+
+        tag_ok = is_partial_match(source_tags, rule_tag)
+        desc_ok = is_partial_match(source_desc, rule_desc)
+
+        if desc_empty and not tag_empty:
+            matched = tag_ok
+            score = len(norm(rule_tag))
+        elif tag_empty and not desc_empty:
+            matched = desc_ok
+            score = len(norm(rule_desc))
+        elif (not tag_empty) and (not desc_empty):
+            matched = tag_ok and desc_ok
+            score = len(norm(rule_tag)) + len(norm(rule_desc))
+        else:
+            matched = False
+            score = -1
+
+        if matched and score > best_score:
+            best = (rule_tag, rule_desc, exp_type, merch_cat)
+            best_score = score
     return best
 
 
@@ -119,7 +162,7 @@ def derive_account_by_source(source_value, account_map, fallback):
 
 def parse_paytm(source_path, mapping_path=DEFAULT_MAPPING_FILE):
     sdf = load_source(source_path)
-    patterns, account_map = load_paytm_mapping(mapping_path)
+    rules, account_map = load_paytm_mapping(mapping_path)
     file_fallback_account = Path(source_path).stem
 
     out_rows = []
@@ -136,39 +179,51 @@ def parse_paytm(source_path, mapping_path=DEFAULT_MAPPING_FILE):
         source_account = str(row.get("Your Account", "")).strip()
         account_value = derive_account_by_source(source_account, account_map, file_fallback_account)
 
-        m = match_pattern(txn, patterns)
+        m = match_paytm1_rule(tags, txn, rules)
         if m:
-            desc, exp_type, merch_cat = m
+            _, _, exp_type, merch_cat = m
         else:
             txn_low = txn.lower()
             if txn_low.startswith("paid to") or txn_low.startswith("money sent to"):
-                desc = "Paytm Payment"
                 exp_type = "Miscellaneous"
                 merch_cat = tags
             else:
-                desc = clean_text(txn)
                 exp_type = "Miscellaneous"
                 merch_cat = tags
 
         out_rows.append(
             {
                 "Period": period,
-                "Description": desc,
-                "Amount": amount,
+                "Account": account_value,
                 "Expense Type": exp_type,
                 "Merchant Category": merch_cat,
-                "Account": account_value,
+                "Amount": amount,
+                "_source_description": clean_text(txn),
             }
         )
 
-    odf = pd.DataFrame(out_rows)
-    # Ensure column order with Amount at position 3
-    odf = odf[["Period", "Description", "Amount", "Expense Type", "Merchant Category", "Account"]]
+    summary_df = pd.DataFrame(out_rows)
+    summary_df = summary_df[
+        ["Period", "Account", "Expense Type", "Merchant Category", "Amount", "_source_description"]
+    ]
 
     with pd.ExcelWriter(OUTPUT_FILE, engine="xlsxwriter") as writer:
-        odf.to_excel(writer, sheet_name="Paytm Transactions", index=False)
+        # Sheet 1: raw source; keep structure but force Amount numeric
+        raw_df = sdf.copy()
+        if "Amount" in raw_df.columns:
+            raw_df["Amount"] = raw_df["Amount"].apply(parse_amount)
+        for id_col in ["UPI Ref No.", "Order ID"]:
+            if id_col in raw_df.columns:
+                raw_df[id_col] = raw_df[id_col].apply(parse_int_like)
+        raw_df.to_excel(writer, sheet_name="Paytm Transactions", index=False)
+        # Sheet 2: categorized summary
+        export_df = summary_df.drop(columns=["_source_description"])
+        summary_sheet_name = "Categorized Txn Summary"
+        export_df.to_excel(writer, sheet_name=summary_sheet_name, index=False)
+
         workbook = writer.book
-        worksheet = writer.sheets["Paytm Transactions"]
+        ws_raw = writer.sheets["Paytm Transactions"]
+        ws_summary = writer.sheets[summary_sheet_name]
 
         header_fmt = workbook.add_format(
             {
@@ -179,69 +234,93 @@ def parse_paytm(source_path, mapping_path=DEFAULT_MAPPING_FILE):
         )
         cell_fmt = workbook.add_format({"border": 1})
         num_fmt = workbook.add_format({"num_format": "#,##0.00"})
+        num_border_fmt = workbook.add_format({"border": 1, "num_format": "#,##0.00"})
+        int_num_border_fmt = workbook.add_format({"border": 1, "num_format": "0"})
+        int_num_fmt = workbook.add_format({"num_format": "0"})
 
-        # Re-write header with format
-        for col_idx, col_name in enumerate(odf.columns):
-            worksheet.write(0, col_idx, col_name, header_fmt)
+        def style_sheet(worksheet, dataframe):
+            nrows, ncols = dataframe.shape
+            for col_idx, col_name in enumerate(dataframe.columns):
+                worksheet.write(0, col_idx, col_name, header_fmt)
 
-        # Apply borders and number format
-        nrows, ncols = odf.shape
-        worksheet.conditional_format(
-            0,
-            0,
-            nrows,
-            ncols - 1,
-            {"type": "no_blanks", "format": cell_fmt},
-        )
-        amt_col = odf.columns.get_loc("Amount")
-        worksheet.set_column(amt_col, amt_col, 14, num_fmt)
+            # Apply borders only to filled cells
+            for r in range(1, nrows + 1):
+                for c, col_name in enumerate(dataframe.columns):
+                    val = dataframe.iloc[r - 1, c]
+                    if pd.isna(val) or (isinstance(val, str) and val.strip() == ""):
+                        continue
+                    if col_name == "Amount":
+                        try:
+                            worksheet.write_number(r, c, float(val), num_border_fmt)
+                        except Exception:
+                            worksheet.write(r, c, val, cell_fmt)
+                    elif col_name in ("UPI Ref No.", "Order ID"):
+                        try:
+                            worksheet.write_number(r, c, float(val), int_num_border_fmt)
+                        except Exception:
+                            worksheet.write(r, c, val, cell_fmt)
+                    else:
+                        worksheet.write(r, c, val, cell_fmt)
 
-        # Auto-adjust widths
-        for col_idx, col_name in enumerate(odf.columns):
-            max_len = len(str(col_name))
-            series = odf[col_name]
-            col_max = (
-                series.map(lambda x: len(str(x)) if pd.notna(x) else 0).max()
-                if not series.empty
-                else 0
-            )
-            width = min(max(max_len, col_max) + 2, 60)
-            if col_idx != amt_col:
-                worksheet.set_column(col_idx, col_idx, width)
+            if "Amount" in dataframe.columns:
+                amt_col = dataframe.columns.get_loc("Amount")
+                worksheet.set_column(amt_col, amt_col, 14, num_fmt)
+            for id_col in ("UPI Ref No.", "Order ID"):
+                if id_col in dataframe.columns:
+                    id_idx = dataframe.columns.get_loc(id_col)
+                    worksheet.set_column(id_idx, id_idx, 18, int_num_fmt)
+            for col_idx, col_name in enumerate(dataframe.columns):
+                max_len = len(str(col_name))
+                series = dataframe[col_name]
+                col_max = (
+                    series.map(lambda x: len(str(x)) if pd.notna(x) else 0).max()
+                    if not series.empty
+                    else 0
+                )
+                width = min(max(max_len, col_max) + 2, 60)
+                if col_name != "Amount":
+                    worksheet.set_column(col_idx, col_idx, width)
+            worksheet.freeze_panes(1, 0)
+            worksheet.autofilter(0, 0, nrows, ncols - 1)
 
-        # Freeze top row and add filter
-        worksheet.freeze_panes(1, 0)
-        worksheet.autofilter(0, 0, nrows, ncols - 1)
+        style_sheet(ws_raw, raw_df)
+        style_sheet(ws_summary, export_df)
 
-        # In-sheet pivot summary at I2: Amount by Expense Type and Merchant Category
-        pivot_df = odf[odf["Description"].str.lower() != "gold coin redemption"].copy()
+        # Pivot block on summary sheet at H2
         pivot_df = (
-            pivot_df.groupby(["Expense Type", "Merchant Category"], as_index=False)["Amount"]
+            export_df[export_df["Account"].astype(str).str.strip().str.lower() != "gold coins"]
+            .groupby(["Account", "Expense Type", "Merchant Category"], as_index=False)["Amount"]
             .sum()
-            .sort_values(by=["Expense Type", "Merchant Category"])
+            .sort_values(by=["Account", "Expense Type", "Merchant Category"])
         )
-
-        pivot_start_row = 1  # I2
-        pivot_start_col = 8  # Col I
-        pivot_headers = ["Expense Type", "Merchant Category", "Amount"]
+        pivot_start_row = 1  # H2
+        pivot_start_col = 7  # H
+        pivot_headers = ["Account", "Expense Type", "Merchant Category", "Amount"]
         for idx, h in enumerate(pivot_headers):
-            worksheet.write(pivot_start_row, pivot_start_col + idx, h, header_fmt)
+            ws_summary.write(pivot_start_row, pivot_start_col + idx, h, header_fmt)
 
+        pivot_num_fmt = workbook.add_format({"border": 1, "num_format": "#,##0.00"})
         for r_idx, row in enumerate(pivot_df.itertuples(index=False), start=pivot_start_row + 1):
-            worksheet.write(r_idx, pivot_start_col + 0, row[0], cell_fmt)
-            worksheet.write(r_idx, pivot_start_col + 1, row[1], cell_fmt)
-            worksheet.write_number(r_idx, pivot_start_col + 2, float(row[2]), workbook.add_format({"border": 1, "num_format": "#,##0.00"}))
+            ws_summary.write(r_idx, pivot_start_col + 0, row[0], cell_fmt)
+            ws_summary.write(r_idx, pivot_start_col + 1, row[1], cell_fmt)
+            ws_summary.write(r_idx, pivot_start_col + 2, row[2], cell_fmt)
+            ws_summary.write_number(r_idx, pivot_start_col + 3, float(row[3]), pivot_num_fmt)
 
-        # Autofilter for pivot block
-        pivot_end_row = pivot_start_row + len(pivot_df)
-        worksheet.autofilter(pivot_start_row, pivot_start_col, pivot_end_row, pivot_start_col + 2)
+        total_row = pivot_start_row + len(pivot_df) + 1
+        total_amount = float(pivot_df["Amount"].sum()) if not pivot_df.empty else 0.0
+        total_label_fmt = workbook.add_format({"bold": True, "border": 1})
+        total_num_fmt = workbook.add_format({"bold": True, "border": 1, "num_format": "#,##0.00"})
+        ws_summary.write(total_row, pivot_start_col + 2, "Total", total_label_fmt)
+        ws_summary.write_number(total_row, pivot_start_col + 3, total_amount, total_num_fmt)
 
-        # Widths for pivot columns
-        worksheet.set_column(pivot_start_col + 0, pivot_start_col + 0, 20)
-        worksheet.set_column(pivot_start_col + 1, pivot_start_col + 1, 22)
-        worksheet.set_column(pivot_start_col + 2, pivot_start_col + 2, 14)
+        pivot_end_row = total_row
+        ws_summary.autofilter(pivot_start_row, pivot_start_col, pivot_end_row, pivot_start_col + 3)
+        ws_summary.set_column(pivot_start_col + 0, pivot_start_col + 0, 16)
+        ws_summary.set_column(pivot_start_col + 1, pivot_start_col + 1, 20)
+        ws_summary.set_column(pivot_start_col + 2, pivot_start_col + 2, 22)
+        ws_summary.set_column(pivot_start_col + 3, pivot_start_col + 3, 14, num_fmt)
 
-    return odf
+    return export_df
 
 
 def main():
