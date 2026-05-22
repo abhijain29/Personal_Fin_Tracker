@@ -152,12 +152,12 @@ def get_parser(file_path):
         if "axis" in text0:
             if "indian oil" in text0:
                 return parse_axis_pdf, "Axis Indian Oil"
-            if "select" in text0:
-                return parse_axis_pdf, "Axis Select"
             # "rewards" can appear in generic Axis footer text (e.g., Citi rewards calculator),
             # so only treat it as Axis Rewards when it clearly refers to the card variant.
             if "rewards smart" in text0 or re.search(r"\brewards\b.{0,40}\bcredit\s+card\b", text0):
                 return parse_axis_rewards_smart, "Axis Rewards"
+            if "select" in text0:
+                return parse_axis_pdf, "Axis Select"
             return parse_axis_pdf, "Axis Bank"
 
         # UNI statements: require word-boundary match for "uni" to avoid false positives (e.g. "UNIT").
@@ -353,20 +353,33 @@ def extract_card_number_tokens(pdf_path: str) -> set[str]:
     if not t:
         return tokens
 
+    def add_token(value: str):
+        value = clean_text(value)
+        if not value:
+            return
+        compact = re.sub(r"\s+", "", value).upper()
+        tokens.add(compact)
+        tokens.add(value.upper())
+        last4 = re.search(r"(\d{4})\s*$", compact)
+        if last4:
+            tokens.add(last4.group(1))
+
     # Masked patterns containing X/* and digits
     for m in re.findall(r"(?:[Xx\*]{2,}[\sXx\*]*){2,}\d{4}", t):
-        tokens.add(re.sub(r"\s+", "", m).upper())
-        tokens.add(m.strip().upper())
+        add_token(m)
     # Patterns like 554637******5403
     for m in re.findall(r"\d{4,6}[Xx\*]{4,}\d{4}", t):
-        tokens.add(m.upper())
+        add_token(m)
+    # Same pattern after removing extracted whitespace.
+    for m in re.findall(r"\d{4,6}[Xx\*]{4,}\d{4}", re.sub(r"\s+", "", t)):
+        add_token(m)
     # Last4 digits (from explicit "Card Number" lines)
     for m in re.findall(r"\b(\d{4})\b", t):
         tokens.add(m)
     return tokens
 
 
-def resolve_bank_variant_from_label(pdf_path: str, bank_hint: str, known_cards: list[dict]):
+def resolve_bank_variant_from_label(pdf_path: str, bank_hint: str = "", known_cards: list[dict] | None = None):
     """
     Use Label Mapping (PDF card number / Card Number) to resolve the specific
     (Account, Card Variant) for a PDF. This prevents Visa/Rupay cards of the same
@@ -374,32 +387,33 @@ def resolve_bank_variant_from_label(pdf_path: str, bank_hint: str, known_cards: 
     """
     if not known_cards:
         return None
-    hint_bank, _ = split_account_variant(bank_hint or "")
-    if not hint_bank:
-        return None
 
     tokens = extract_card_number_tokens(pdf_path)
     if not tokens:
         return None
 
-    # Restrict to same bank as hinted by parser
+    hint_bank, _ = split_account_variant(bank_hint or "")
+
+    def norm(s: str) -> str:
+        return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+
+    norm_tokens = {norm(t) for t in tokens if norm(t)}
+
+    # Restrict to same bank as hinted by parser when a reliable hint exists.
     candidates = []
     for c in known_cards:
         b, v = split_account_variant(f"{c.get('Bank','')} {c.get('Card Variant','')}")
-        if b != hint_bank:
+        if hint_bank and b != hint_bank:
             continue
         candidates.append((c, b, v))
 
     if not candidates:
         return None
 
-    def norm(s: str) -> str:
-        return re.sub(r"\s+", "", (s or "")).upper()
-
     # Prefer exact PDF card number match (whitespace-insensitive).
     for c, b, v in candidates:
         pdf_card = c.get("PDF card number") or ""
-        if pdf_card and norm(pdf_card) in {norm(t) for t in tokens}:
+        if pdf_card and norm(pdf_card) in norm_tokens:
             return {"Account": b, "Card Variant": v, "Card Last4": clean_text(c.get("Card Number", ""))}
 
     # Fallback: match by last4 digits.
@@ -885,6 +899,7 @@ def extract_statement_period(pdf_path):
             (r"STATEMENT DATE\s+(\w+)\s+\d{1,2},\s+(\d{4})", "%B %Y"),
             (r"Statement Date\s+\d{1,2}\s+([A-Za-z]{3}),\s+(\d{4})", "%b %Y"),
             (r"Statement\s+\d{1,2}\s+[A-Za-z]{3},\s+\d{4}\s*-\s*\d{1,2}\s+([A-Za-z]{3}),\s+(\d{4})", "%b %Y"),
+            (r"Selected\s+Statement\s+Month(?:\s+\S+){0,6}?\s+([A-Za-z]{3,})\s+(\d{4})", "%b %Y"),
         ]
         for pattern, fmt in patterns:
             match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -911,7 +926,7 @@ def extract_payment_due_period(pdf_path, bank=None, variant=None, due_date_label
         return dt.strftime("%b-%Y")
 
     def parse_date_string(raw):
-        for fmt in ("%d/%m/%Y", "%d/%b/%Y", "%d %b %Y", "%d %b %y", "%d %b, %Y", "%B %d, %Y"):
+        for fmt in ("%d/%m/%Y", "%d/%b/%Y", "%d %b %Y", "%d %b %y", "%d %b '%y", "%d %b, %Y", "%B %d, %Y"):
             try:
                 return normalize_period_from_date(datetime.strptime(raw, fmt))
             except Exception:
@@ -951,7 +966,7 @@ def extract_payment_due_period(pdf_path, bank=None, variant=None, due_date_label
                 labels.append(mapped_label)
         labels.extend(["Payment Due Date", "PAYMENT DUE DATE", "Due Date"])
 
-        date_pattern = r"(\d{2}/\d{2}/\d{4}|\d{2}/[A-Za-z]{3}/\d{4}|\d{1,2}\s+[A-Za-z]{3},\s+\d{4}|[A-Za-z]+\s+\d{1,2},\s+\d{4}|\d{2}\s+[A-Za-z]{3}\s+\d{2,4})"
+        date_pattern = r"(\d{2}/\d{2}/\d{4}|\d{2}/[A-Za-z]{3}/\d{4}|\d{1,2}\s+[A-Za-z]{3},\s+\d{4}|[A-Za-z]+\s+\d{1,2},\s+\d{4}|\d{2}\s+[A-Za-z]{3}\s+'?\d{2,4})"
         for label in labels:
             # Prefer the last date within the label's local window (helps when there are multiple
             # dates in the same line, e.g. statement period + due date + generation date).
@@ -986,7 +1001,7 @@ def extract_payment_due_date(pdf_path, bank=None, variant=None, due_date_label_m
     """
 
     def parse_date_string(raw):
-        for fmt in ("%d/%m/%Y", "%d/%b/%Y", "%d %b %Y", "%d %b %y", "%d %b, %Y", "%B %d, %Y"):
+        for fmt in ("%d/%m/%Y", "%d/%b/%Y", "%d %b %Y", "%d %b %y", "%d %b '%y", "%d %b, %Y", "%B %d, %Y"):
             try:
                 return datetime.strptime(raw, fmt)
             except Exception:
@@ -1027,7 +1042,7 @@ def extract_payment_due_date(pdf_path, bank=None, variant=None, due_date_label_m
                 labels.append(mapped_label)
         labels.extend(["Payment Due Date", "PAYMENT DUE DATE", "Due Date"])
 
-        date_pattern = r"(\d{2}/\d{2}/\d{4}|\d{2}/[A-Za-z]{3}/\d{4}|\d{1,2}\s+[A-Za-z]{3},\s+\d{4}|[A-Za-z]+\s+\d{1,2},\s+\d{4}|\d{2}\s+[A-Za-z]{3}\s+\d{2,4})"
+        date_pattern = r"(\d{2}/\d{2}/\d{4}|\d{2}/[A-Za-z]{3}/\d{4}|\d{1,2}\s+[A-Za-z]{3},\s+\d{4}|[A-Za-z]+\s+\d{1,2},\s+\d{4}|\d{2}\s+[A-Za-z]{3}\s+'?\d{2,4})"
 
         for candidate_text in text_variants:
             for label in labels:
@@ -1067,7 +1082,7 @@ def extract_period_from_label(pdf_path, bank=None, variant=None, known_cards=Non
     """
 
     def parse_date(raw: str):
-        for fmt in ("%d/%m/%Y", "%d/%b/%Y", "%d %b %Y", "%d %b %y", "%d %b, %Y", "%B %d, %Y"):
+        for fmt in ("%d/%m/%Y", "%d/%b/%Y", "%d %b %Y", "%d %b %y", "%d %b '%y", "%d %b, %Y", "%B %d, %Y"):
             try:
                 return datetime.strptime(raw, fmt)
             except Exception:
@@ -1088,7 +1103,7 @@ def extract_period_from_label(pdf_path, bank=None, variant=None, known_cards=Non
     if not label:
         return ""
 
-    date_pattern = r"(\d{2}/\d{2}/\d{4}|\d{2}/[A-Za-z]{3}/\d{4}|\d{1,2}\s+[A-Za-z]{3},\s+\d{4}|[A-Za-z]+\s+\d{1,2},\s+\d{4}|\d{2}\s+[A-Za-z]{3}\s+\d{2,4})"
+    date_pattern = r"(\d{2}/\d{2}/\d{4}|\d{2}/[A-Za-z]{3}/\d{4}|\d{1,2}\s+[A-Za-z]{3},\s+\d{4}|[A-Za-z]+\s+\d{1,2},\s+\d{4}|\d{2}\s+[A-Za-z]{3}\s+'?\d{2,4})"
 
     try:
         with pdfplumber.open(pdf_path) as pdf:
@@ -1098,6 +1113,17 @@ def extract_period_from_label(pdf_path, bank=None, variant=None, known_cards=Non
     text_norm = re.sub(r"\s+", " ", text or "").strip()
     if not text_norm:
         return ""
+
+    selected_month = re.search(
+        r"Selected\s+Statement\s+Month(?:\s+\S+){0,6}?\s+([A-Za-z]{3,})\s+(\d{4})",
+        text_norm,
+        re.I,
+    )
+    if selected_month:
+        try:
+            return datetime.strptime(" ".join(selected_month.groups()), "%b %Y").strftime("%b-%Y")
+        except Exception:
+            pass
 
     # Prefer a labeled match close to the label.
     m = re.search(re.escape(label) + r".{0,220}", text_norm, flags=re.IGNORECASE)
@@ -1157,6 +1183,30 @@ def build_no_transaction_record(file_path, bank_hint):
     }
 
 
+def parser_for_resolved_card(account: str, variant: str):
+    account_l = clean_text(account).lower()
+    variant_l = clean_text(variant).lower()
+    if account_l == "axis":
+        if variant_l == "rewards":
+            return parse_axis_rewards_smart, "Axis Rewards"
+        if variant_l == "select":
+            return parse_axis_pdf, "Axis Select"
+        if variant_l == "indian oil":
+            return parse_axis_pdf, "Axis Indian Oil"
+        return parse_axis_pdf, "Axis Bank"
+    if account_l == "uni":
+        if "upi" in variant_l:
+            return parse_uni_gold_upi_cc_pdf, "Uni Gold UPI"
+        return parse_uni_gold_cc_pdf, "Uni Gold"
+    if account_l == "icici":
+        return extract_icici_transactions, "ICICI Amazon Pay"
+    if account_l == "idfc":
+        return extract_idfc_transactions, "IDFC FIRST"
+    if account_l == "hdfc" and "tata neu" in variant_l:
+        return parse_hdfc_tata_neu_cc_pdf, "HDFC Tata Neu"
+    return None, None
+
+
 def build_no_pdf_record(bank: str, variant: str, period: str):
     """Placeholder when no statement PDFs are present at all for a known card."""
     bank_name, card_variant = split_account_variant(f"{bank} {variant}")
@@ -1213,7 +1263,15 @@ def aggregate():
 
             print(f"📄 Processing: {file}")
 
+            resolved_from_label = resolve_bank_variant_from_label(file_path, known_cards=known_cards)
             parser, bank = get_parser(file_path)
+            if resolved_from_label:
+                resolved_parser, resolved_bank_hint = parser_for_resolved_card(
+                    resolved_from_label["Account"],
+                    resolved_from_label["Card Variant"],
+                )
+                if resolved_parser:
+                    parser, bank = resolved_parser, resolved_bank_hint
 
             if not parser:
                 print(f"   ⚠️ No parser found")
@@ -1224,7 +1282,15 @@ def aggregate():
                 records = parser(file_path)
 
                 if not records:
-                    placeholder = build_no_transaction_record(file_path, bank or "")
+                    if resolved_from_label:
+                        placeholder = build_no_transaction_record(
+                            file_path,
+                            f"{resolved_from_label['Account']} {resolved_from_label['Card Variant']}",
+                        )
+                        placeholder["Account"] = resolved_from_label["Account"]
+                        placeholder["Card Variant"] = resolved_from_label["Card Variant"]
+                    else:
+                        placeholder = build_no_transaction_record(file_path, bank or "")
                     # Align placeholder period with label-driven mapping when possible.
                     derived_period = extract_period_from_label(
                         file_path,
@@ -1274,7 +1340,9 @@ def aggregate():
 
                 # Deduplicate: same bank+variant+period should only be processed once
                 # even if multiple PDFs are dropped in the folder with different names.
-                resolved = resolve_bank_variant_from_label(file_path, bank or records[0].get("Account", ""), known_cards)
+                resolved = resolved_from_label or resolve_bank_variant_from_label(
+                    file_path, bank or records[0].get("Account", ""), known_cards
+                )
                 if resolved:
                     tmp_bank_name = resolved["Account"]
                     tmp_variant = resolved["Card Variant"]
