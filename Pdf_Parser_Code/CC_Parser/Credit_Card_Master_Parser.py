@@ -1513,22 +1513,24 @@ def aggregate():
                 acc_idx = cols.index("Account") + 1
                 cols.insert(acc_idx, "Card Variant")
                 df_expenses = df_expenses[cols]
-        # Sort by Account, Card Variant, Date, but keep NO PAYMENT NEEDED rows at the bottom.
+        # Sort by Account, Card Variant, Date, but keep placeholders at the bottom.
         if not df_expenses.empty:
+            desc_upper = df_expenses.get("Description", "").astype(str).str.strip().str.upper()
+            df_expenses["_no_stmt"] = desc_upper.eq(NO_STMT_AVAILABLE_TEXT.upper())
             df_expenses["_no_payment"] = (
-                df_expenses.get("Description", "").astype(str).str.strip().str.upper().eq("NO PAYMENT NEEDED")
+                desc_upper.eq("NO PAYMENT NEEDED")
             )
             if "Date" in df_expenses.columns:
                 df_expenses["_date_sort"] = pd.to_datetime(df_expenses["Date"], errors="coerce", dayfirst=True)
             else:
                 df_expenses["_date_sort"] = pd.NaT
             df_expenses = df_expenses.sort_values(
-                by=["_no_payment", "Account", "Card Variant", "_date_sort"],
-                ascending=[True, True, True, True],
+                by=["_no_stmt", "_no_payment", "Account", "Card Variant", "_date_sort"],
+                ascending=[True, True, True, True, True],
                 kind="stable",
                 na_position="last",
             ).reset_index(drop=True)
-            df_expenses = df_expenses.drop(columns=["_no_payment", "_date_sort"], errors="ignore")
+            df_expenses = df_expenses.drop(columns=["_no_stmt", "_no_payment", "_date_sort"], errors="ignore")
         df_expenses.to_excel(writer, sheet_name="Credit card expenses", index=False)
 
         # Reconcile using expenses total vs statement due
@@ -1614,6 +1616,12 @@ def aggregate():
                 df_payments.at[idx, "Recon Diff"] = diff
                 df_payments.at[idx, "Reconciled?"] = "Yes" if abs(diff) <= 0.01 else "No"
 
+        if not df_payments.empty and "Description" in df_payments.columns:
+            no_stmt_mask = df_payments["Description"].astype(str).str.strip().str.upper().eq(
+                NO_STMT_AVAILABLE_TEXT.upper()
+            )
+            df_payments.loc[no_stmt_mask, "Payment Due Date"] = NO_STMT_AVAILABLE_TEXT
+
         df_payments = df_payments.drop(
             columns=["Type", "Expense Type", "Merchant Category", "Store Name", "Amount"],
             errors="ignore",
@@ -1652,18 +1660,24 @@ def aggregate():
         existing_cols = [c for c in desired_cols if c in df_payments.columns]
         remaining = [c for c in df_payments.columns if c not in existing_cols and c not in {"Date", "Description"}]
         df_payments = df_payments[existing_cols + remaining]
-        # Sort by Account + Card Variant, but keep rows with Payment Due == 0 at the bottom.
+        # Sort by Account + Card Variant, but keep no-statement and zero-due rows at the bottom.
         if not df_payments.empty:
+            if "Payment Due Date" in df_payments.columns:
+                df_payments["_no_stmt"] = df_payments["Payment Due Date"].astype(str).str.strip().str.upper().eq(
+                    NO_STMT_AVAILABLE_TEXT.upper()
+                )
+            else:
+                df_payments["_no_stmt"] = False
             df_payments["_due_zero"] = False
             if "Payment Due" in df_payments.columns:
                 df_payments["_due_zero"] = pd.to_numeric(df_payments["Payment Due"], errors="coerce").fillna(0).eq(0)
             df_payments = df_payments.sort_values(
-                by=["_due_zero", "Account", "Card Variant", "Period"],
-                ascending=[True, True, True, True],
+                by=["_no_stmt", "_due_zero", "Account", "Card Variant", "Period"],
+                ascending=[True, True, True, True, True],
                 kind="stable",
                 na_position="last",
             ).reset_index(drop=True)
-            df_payments = df_payments.drop(columns=["_due_zero"], errors="ignore")
+            df_payments = df_payments.drop(columns=["_no_stmt", "_due_zero"], errors="ignore")
         df_payments.to_excel(writer, sheet_name="Credit card Reconciliation", index=False)
         # Summary grouped by Expense Type + Merchant Category
         if not df_expenses.empty:
