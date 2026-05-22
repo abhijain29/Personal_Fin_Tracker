@@ -10,24 +10,51 @@ Local parsers for:
 
 Outputs are generated as Excel workbooks under `Output/`.
 
-## Recent Updates (Feb 2026)
-1. Added bank-specific savings parsers:
+## Recent Updates (May 2026)
+1. Credit card mapping moved to the consolidated workbook:
+- Mapping file: `Reference Documents/Merchant category mapping.xlsx`
+- Category rules sheet: `CC Merchant category mapping`
+- Card/statement label sheet: `Label Mapping`
+- Old CSV files removed:
+  - `Reference Documents/Category_Mapping_v1.csv`
+  - `Reference Documents/Outstanding_Label_Mapping.csv`
+
+2. Credit card master parser was upgraded:
+- detects card type from PDF content when filenames are generic
+- resolves bank/card variants from `Label Mapping`
+- extracts statement due date and reconciliation labels from workbook-driven mappings
+- adds HDFC Tata Neu parser support:
+  - `Pdf_Parser_Code/CC_Parser/hdfc_tata_neu_cc_pdf_parser.py`
+- improved IDFC and Uni Gold parsing for newer PDF formats
+
+3. Savings account mapping moved to a dedicated workbook:
+- Mapping file: `Reference Documents/SB Mapping.xlsx`
+- Main rules sheet: `SB Mapping`
+- Account-name override sheet: `Bank Name map`
+- Transaction-date extraction sheet: `Trans Date`
+
+4. SB master parser mapping engine was upgraded:
+- bank-aware rule selection
+- stronger keyword matching (normalized + token matching)
+- derived money-in/money-out expense types
+- merchant-category reversal for self-transfer directions
+- archive folders named `Archive` or `Archived` are skipped during normal folder scans
+- added/expanded support for HDFC, SBI, HSBC, and IndusInd formats in the master parser
+
+5. Added bank-specific savings parsers:
 - `Pdf_Parser_Code/SB_Parser_Code/axis_sb_parser.py`
 - `Pdf_Parser_Code/SB_Parser_Code/icici_sb_parser.py`
 - `Pdf_Parser_Code/SB_Parser_Code/idfc_sb_parser.py`
 
-2. Axis parser now writes using template workbook:
+6. Axis and IDFC savings parsers can write using template workbooks:
 - Template: `Reference Documents/template file/axis_sb_template.xlsx`
+- Template: `Reference Documents/template file/idfc_sb_template.xlsx`
 - Output: `Output/axis_summary.xlsx`
+- Output: `Output/idfc_summary.xlsx`
 - Template pivots are preserved during refresh.
 - Important: second pivot should be maintained in template itself (auto-creation was removed after Excel desktop crash risk).
 
-3. SB master parser mapping engine was upgraded:
-- bank-aware rule selection
-- stronger keyword matching (normalized + token matching)
-- directional disambiguation support for transfer-like rows
-
-4. Added new UPI PDF parsers:
+7. Added new UPI PDF parsers:
 - `Pdf_Parser_Code/UPI_Parser_Code/PhonePe_Parser.py`
 - `Pdf_Parser_Code/UPI_Parser_Code/MobiKwik_Parser.py`
 - both write to `Output/` and log runs in `Logs/File_Parser_log.txt`
@@ -56,17 +83,38 @@ Monthly_Fin_Tracker/
 - Script: `Pdf_Parser_Code/CC_Parser/Credit_Card_Master_Parser.py`
 - Input: `Bank_Statements/CC_Statements/`
 - Output: `Output/CC_Monthly_Master_Tracker.xlsx`
+- Mapping: `Reference Documents/Merchant category mapping.xlsx`
 - Main sheets:
   - `Credit card expenses`
   - `Credit card Reconciliation`
   - `Credit card summary`
+- Supported parser modules include:
+  - ICICI Amazon Pay
+  - IDFC FIRST
+  - Uni Gold
+  - Uni Gold UPI
+  - Axis Select / Indian Oil / Rewards
+  - HDFC Tata Neu
 
 2. Savings accounts:
 - Script: `Pdf_Parser_Code/SB_Parser_Code/SB_Master_Parser.py`
 - Input: `Bank_Statements/SB_Statements/`
 - Output: `Output/SB_Monthly_Master_Tracker.xlsx`
+- Mapping: `Reference Documents/SB Mapping.xlsx`
 - Main sheet:
   - `SB AC expenses`
+- Summary sheet:
+  - `SB Categorized Summary`
+- Normal folder scans skip `Archive/` and `Archived/` folders.
+- Supported bank formats include:
+  - Axis
+  - HDFC
+  - ICICI
+  - IDFC
+  - Yes
+  - SBI
+  - HSBC
+  - IndusInd
 - Axis logic includes:
   - parsing transaction block under `Statement for Account No...`
   - opening balance synthetic row:
@@ -91,6 +139,7 @@ Monthly_Fin_Tracker/
   - Script: `Pdf_Parser_Code/SB_Parser_Code/idfc_sb_parser.py`
   - Input: IDFC PDFs in `Bank_Statements/SB_Statements/`
   - Output: `Output/idfc_summary.xlsx`
+  - Uses template: `Reference Documents/template file/idfc_sb_template.xlsx`
   - Sheets: `IDFC Transactions`, `IDFC Categorized Summary`
 
 4. Paytm UPI:
@@ -169,6 +218,27 @@ Matching behavior:
   - excludes `Account = Gold Coins`
   - includes total row at end
 
+## Mapping Workbooks
+1. Credit card and UPI mappings:
+- File: `Reference Documents/Merchant category mapping.xlsx`
+- Important sheets:
+  - `CC Merchant category mapping`: credit-card keyword to expense/category/store mapping
+  - `Label Mapping`: card variants, PDF card numbers, outstanding labels, due-date labels, and reconciliation labels
+  - `UPIs`: PhonePe/MobiKwik mapping
+  - `PayTm_1`: Paytm mapping
+  - `UPI Name`: UPI file-name/account mapping
+
+2. Savings account mappings:
+- File: `Reference Documents/SB Mapping.xlsx`
+- Important sheets:
+  - `SB Mapping`: bank, keyword, mode, expense type, merchant category, store name, direction, and priority rules
+  - `Bank Name map`: maps PDF text/customer names to output account names
+  - `Trans Date`: bank-specific transaction-date/description field hints
+
+3. Savings templates:
+- `Reference Documents/template file/axis_sb_template.xlsx`
+- `Reference Documents/template file/idfc_sb_template.xlsx`
+
 ## Run Commands
 From project root:
 
@@ -223,8 +293,10 @@ python3 Pdf_Parser_Code/UPI_Parser_Code/MobiKwik_Parser.py
 
 ## Git Notes
 - Keep statement files out of git.
+- Keep accidental personal-folder copies out of git.
 - Current `.gitignore` already excludes:
   - `Bank_Statements/CC_Statements/`
   - `Bank_Statements/SB_Statements/`
   - `Bank_Statements/UPI Statements/`
   - `Output/`, `Logs/`, `Error/`, `__pycache__/`
+  - `Reference Documents/OneDrive-Personal/`
