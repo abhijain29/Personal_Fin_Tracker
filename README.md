@@ -23,6 +23,10 @@ Outputs are generated as Excel workbooks under `Output/`.
 - detects card type from PDF content when filenames are generic
 - resolves bank/card variants from `Label Mapping`
 - extracts statement due date and reconciliation labels from workbook-driven mappings
+- handles ICICI PDF text with doubled letters in due-date labels
+- keeps cards with no available statement at the bottom of expense and reconciliation sheets
+- writes `No STMT avaliable` for missing-statement rows and carries the dominant transaction period to those rows
+- applies orange formatting only to actual headers in `Credit card summary Per card`
 - adds HDFC Tata Neu parser support:
   - `Pdf_Parser_Code/CC_Parser/hdfc_tata_neu_cc_pdf_parser.py`
 - improved IDFC and Uni Gold parsing for newer PDF formats
@@ -88,6 +92,12 @@ Monthly_Fin_Tracker/
   - `Credit card expenses`
   - `Credit card Reconciliation`
   - `Credit card summary`
+  - `Credit card summary Per card`
+- Missing-statement behavior:
+  - cards configured in `Label Mapping` but not found in input PDFs are emitted with description `No STMT avaliable`
+  - these rows use the dominant period from available transaction rows
+  - these rows are sorted to the bottom of `Credit card expenses`
+  - matching reconciliation rows are sorted to the bottom and show `No STMT avaliable` in `Payment Due Date`
 - Supported parser modules include:
   - ICICI Amazon Pay
   - IDFC FIRST
