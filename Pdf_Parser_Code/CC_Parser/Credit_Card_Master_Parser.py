@@ -72,11 +72,19 @@ EXPENSE_TYPE_KEYWORDS = {
     "Fuel": ["FUEL", "PETROL", "DIESEL", "INDIAN OIL", "IOCL", "BPCL", "HPCL"],
 }
 
+NO_STMT_AVAILABLE_TEXT = "No STMT avaliable"
+
 
 def clean_text(value):
     if value is None or pd.isna(value):
         return ""
     return re.sub(r"\s+", " ", str(value).strip())
+
+
+def collapse_repeated_letters(text: str) -> str:
+    """Repair PDF text like 'PPAAYYMMEENNTT DDUUEE DDAATTEE'."""
+    s = str(text or "")
+    return re.sub(r"([A-Za-z])\1", r"\1", s)
 
 
 def get_parser(file_path):
@@ -425,6 +433,24 @@ def normalize_period_mon_yyyy(raw: object) -> str:
         except Exception:
             pass
     return s
+
+
+def dominant_period_mon_yyyy(records: list[dict]) -> str:
+    counts = {}
+    for r in records:
+        if r.get("Type") == "NO_PDF":
+            continue
+        period = normalize_period_mon_yyyy(r.get("Period"))
+        if not period or period == "Unknown":
+            continue
+        try:
+            datetime.strptime(period, "%b-%Y")
+        except Exception:
+            continue
+        counts[period] = counts.get(period, 0) + 1
+    if not counts:
+        return ""
+    return sorted(counts.items(), key=lambda item: (-item[1], datetime.strptime(item[0], "%b-%Y")))[0][0]
 
 
 def extract_labeled_amount(pdf_path: str, label: str) -> float | None:
@@ -971,19 +997,24 @@ def extract_payment_due_date(pdf_path, bank=None, variant=None, due_date_label_m
         text_norm = re.sub(r"\s+", " ", text or "").strip()
         if not text_norm:
             return ""
+        text_variants = [text_norm]
+        collapsed = re.sub(r"\s+", " ", collapse_repeated_letters(text_norm)).strip()
+        if collapsed and collapsed != text_norm:
+            text_variants.append(collapsed)
 
-        if (bank or "").lower() == "axis":
-            m = re.search(
-                r"Statement\s+Period\s+Payment\s+Due\s+Date\s+Statement\s+Generation\s+Date"
-                r".{0,120}?"
-                r"(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})",
-                text_norm,
-                flags=re.IGNORECASE,
-            )
-            if m:
-                dt = parse_date_string(m.group(3).strip())
-                if dt:
-                    return dt.strftime("%d-%b-%Y")
+        for candidate_text in text_variants:
+            if (bank or "").lower() == "axis":
+                m = re.search(
+                    r"Statement\s+Period\s+Payment\s+Due\s+Date\s+Statement\s+Generation\s+Date"
+                    r".{0,120}?"
+                    r"(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})",
+                    candidate_text,
+                    flags=re.IGNORECASE,
+                )
+                if m:
+                    dt = parse_date_string(m.group(3).strip())
+                    if dt:
+                        return dt.strftime("%d-%b-%Y")
 
         bank_l = (bank or "").lower()
         variant_l = (variant or "").lower()
@@ -998,19 +1029,27 @@ def extract_payment_due_date(pdf_path, bank=None, variant=None, due_date_label_m
 
         date_pattern = r"(\d{2}/\d{2}/\d{4}|\d{2}/[A-Za-z]{3}/\d{4}|\d{1,2}\s+[A-Za-z]{3},\s+\d{4}|[A-Za-z]+\s+\d{1,2},\s+\d{4}|\d{2}\s+[A-Za-z]{3}\s+\d{2,4})"
 
-        for label in labels:
-            # Common forms: "Payment Due Date 10/03/2026" or "PAYMENT DUE DATE: 10/03/2026"
-            m = re.search(re.escape(label) + r"\s*[:\-]?\s*" + date_pattern, text_norm, re.I)
-            if m:
-                dt = parse_date_string(m.group(1))
-                if dt:
-                    return dt.strftime("%d-%b-%Y")
-            # Sometimes the date is on the next line; allow small gap.
-            m = re.search(re.escape(label) + r".{0,40}?" + date_pattern, text_norm, re.I)
-            if m:
-                dt = parse_date_string(m.group(1))
-                if dt:
-                    return dt.strftime("%d-%b-%Y")
+        for candidate_text in text_variants:
+            for label in labels:
+                label_variants = [label]
+                collapsed_label = collapse_repeated_letters(label)
+                if collapsed_label and collapsed_label not in label_variants:
+                    label_variants.append(collapsed_label)
+                for label_variant in label_variants:
+                    # Common forms: "Payment Due Date 10/03/2026" or "PAYMENT DUE DATE: 10/03/2026"
+                    m = re.search(re.escape(label_variant) + r"\s*[:\-]?\s*" + date_pattern, candidate_text, re.I)
+                    if m:
+                        dt = parse_date_string(m.group(1))
+                        if dt:
+                            return dt.strftime("%d-%b-%Y")
+                    # Some statements have label/value pairs spread across visual columns.
+                    m = re.search(re.escape(label_variant) + r".{0,220}", candidate_text, re.I)
+                    if m:
+                        found = re.findall(date_pattern, m.group(0), flags=re.I)
+                        for raw in found:
+                            dt = parse_date_string(raw.strip())
+                            if dt:
+                                return dt.strftime("%d-%b-%Y")
         return ""
 
     try:
@@ -1126,7 +1165,7 @@ def build_no_pdf_record(bank: str, variant: str, period: str):
         "Account": bank_name,
         "Card Variant": card_variant,
         "Date": "",
-        "Description": "NO PAYMENT NEEDED",
+        "Description": NO_STMT_AVAILABLE_TEXT,
         "Amount": 0.0,
         "Type": "NO_PDF",  # used only for formatting; not a real Dr/Cr.
         "Expense Type": "N/A",
@@ -1378,6 +1417,12 @@ def aggregate():
             if (b, v) not in processed_bank_variants:
                 all_records.append(build_no_pdf_record(c["Bank"], c["Card Variant"], normalize_period_mon_yyyy(now_period)))
 
+    dominant_period = dominant_period_mon_yyyy(all_records)
+    if dominant_period:
+        for r in all_records:
+            if r.get("Type") == "NO_PDF":
+                r["Period"] = dominant_period
+
     # Split expenses vs payments
     expenses = []
     payments = []
@@ -1395,18 +1440,29 @@ def aggregate():
     # Ensure a payment row exists per Account+Variant+Period when expenses exist
     expense_keys = {(r.get("Account"), r.get("Card Variant"), r.get("Period")) for r in expenses}
     payment_keys = {(r.get("Account"), r.get("Card Variant"), r.get("Period")) for r in payments}
+    no_pdf_expense_keys = {
+        (r.get("Account"), r.get("Card Variant"), r.get("Period"))
+        for r in expenses
+        if r.get("Type") == "NO_PDF"
+    }
     for key in expense_keys - payment_keys:
         account, variant, period = key
         needs_no_payment_placeholder = key in no_payment_needed_keys
+        needs_no_pdf_placeholder = key in no_pdf_expense_keys
         payments.append(
             {
                 "Period": period,
                 "Account": account,
                 "Card Variant": variant,
                 "Date": "",
-                "Description": "NO PAYMENT NEEDED" if needs_no_payment_placeholder else "No outstanding",
+                "Description": (
+                    NO_STMT_AVAILABLE_TEXT
+                    if needs_no_pdf_placeholder
+                    else "NO PAYMENT NEEDED" if needs_no_payment_placeholder
+                    else "No outstanding"
+                ),
                 "Amount": 0.0,
-                "Type": "",
+                "Type": "NO_PDF" if needs_no_pdf_placeholder else "",
             }
         )
 
@@ -1426,26 +1482,6 @@ def aggregate():
     for _df in (df_expenses, df_payments, df_summary):
         if not _df.empty and "Period" in _df.columns:
             _df["Period"] = _df["Period"].map(normalize_period_mon_yyyy)
-
-    # For NO_PDF placeholders: use the max Period seen in real data, if available.
-    def _max_period_mon_yyyy(df: pd.DataFrame) -> str:
-        if df.empty or "Period" not in df.columns:
-            return ""
-        dates = []
-        for p in df["Period"].dropna().astype(str).tolist():
-            try:
-                dates.append(datetime.strptime(p, "%b-%Y"))
-            except Exception:
-                pass
-        if not dates:
-            return ""
-        return max(dates).strftime("%b-%Y")
-
-    max_period = _max_period_mon_yyyy(df_expenses) or _max_period_mon_yyyy(df_payments) or ""
-    if max_period:
-        for r in all_records:
-            if r.get("Type") == "NO_PDF":
-                r["Period"] = max_period
 
     if not df_summary.empty:
         summary = (
@@ -1756,6 +1792,7 @@ def aggregate():
         from openpyxl.utils import get_column_letter
 
         header_fill = PatternFill(start_color="F4B183", end_color="F4B183", fill_type="solid")
+        no_fill = PatternFill(fill_type=None)
         header_font = Font(bold=True)
         thin = Side(style="thin")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -1848,21 +1885,49 @@ def aggregate():
                     amount_like_cols.add(col)
             # Header styling
             header_rows = {1}
+            header_row_ranges = None
             if ws.title == "Credit card summary Per card":
-                header_rows = {
-                    detailed_title_row + 1,
-                    cc_expense_title_row + 1,
-                    card_to_expense_title_row + 1,
-                    card_variant_title_row + 1,
-                }
-            for row in header_rows:
-                if row > max_row:
-                    continue
-                for col in range(1, max_col + 1):
-                    cell = ws.cell(row=row, column=col)
-                    if cell.value not in (None, ""):
-                        cell.font = header_font
-                        cell.fill = header_fill
+                header_row_ranges = [
+                    (
+                        detailed_title_row + 1,
+                        detailed_startcol + 1,
+                        detailed_startcol + len(summary_per_card_tbl.columns),
+                    ),
+                    (
+                        cc_expense_title_row + 1,
+                        cc_expense_startcol + 1,
+                        cc_expense_startcol + len(summary_per_card_exp_type_tbl.columns),
+                    ),
+                    (
+                        card_to_expense_title_row + 1,
+                        card_to_expense_startcol + 1,
+                        card_to_expense_startcol + len(summary_per_card_expense_pivot_tbl.columns),
+                    ),
+                    (
+                        card_variant_title_row + 1,
+                        card_variant_startcol + 1,
+                        card_variant_startcol + len(card_variant_summary_tbl.columns),
+                    ),
+                ]
+                header_rows = {row for row, _, _ in header_row_ranges}
+            if header_row_ranges is None:
+                for row in header_rows:
+                    if row > max_row:
+                        continue
+                    for col in range(1, max_col + 1):
+                        cell = ws.cell(row=row, column=col)
+                        if cell.value not in (None, ""):
+                            cell.font = header_font
+                            cell.fill = header_fill
+            else:
+                for row, start_col, end_col in header_row_ranges:
+                    if row > max_row:
+                        continue
+                    for col in range(start_col, min(end_col, max_col) + 1):
+                        cell = ws.cell(row=row, column=col)
+                        if cell.value not in (None, ""):
+                            cell.font = header_font
+                            cell.fill = header_fill
             if ws.title == "Credit card summary Per card":
                 ws.auto_filter.ref = f"A{detailed_title_row + 1}:G{detailed_data_end_row}"
             elif ws.title == "Credit card Reconciliation":
@@ -1892,6 +1957,9 @@ def aggregate():
                     if apply_border:
                         cell.border = border
 
+                    if ws.title == "Credit card summary Per card" and row not in header_rows:
+                        cell.fill = no_fill
+
                     # Shade entire row for Payment Due == 0 (White, darker 15%).
                     if due_is_zero:
                         cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
@@ -1903,7 +1971,7 @@ def aggregate():
                         row >= 2
                         and description_col is not None
                         and col == description_col
-                        and str(cell.value or "").strip().upper() == "NO PAYMENT NEEDED"
+                        and str(cell.value or "").strip().upper() in {"NO PAYMENT NEEDED", NO_STMT_AVAILABLE_TEXT.upper()}
                     ):
                         # Red by default; green only when there was no PDF present at all.
                         type_col = None
