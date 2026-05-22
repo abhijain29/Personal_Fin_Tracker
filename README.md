@@ -17,7 +17,7 @@ Outputs are generated as Excel workbooks under `Output/`.
 - `Pdf_Parser_Code/SB_Parser_Code/idfc_sb_parser.py`
 
 2. Axis parser now writes using template workbook:
-- Template: `Reference Documents/axis_summary_template.xlsx`
+- Template: `Reference Documents/template file/axis_sb_template.xlsx`
 - Output: `Output/axis_summary.xlsx`
 - Template pivots are preserved during refresh.
 - Important: second pivot should be maintained in template itself (auto-creation was removed after Excel desktop crash risk).
@@ -80,7 +80,7 @@ Monthly_Fin_Tracker/
   - Script: `Pdf_Parser_Code/SB_Parser_Code/axis_sb_parser.py`
   - Input: Axis PDFs in `Bank_Statements/SB_Statements/`
   - Output: `Output/axis_summary.xlsx`
-  - Uses template: `Reference Documents/axis_summary_template.xlsx`
+  - Uses template: `Reference Documents/template file/axis_sb_template.xlsx`
   - Sheets refreshed: `Axis Transactions`, `Axis Categorized Summary`
 - ICICI:
   - Script: `Pdf_Parser_Code/SB_Parser_Code/icici_sb_parser.py`

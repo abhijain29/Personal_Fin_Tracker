@@ -61,31 +61,77 @@ def extract_idfc_transactions(pdf_path):
 
         period = extract_period(full_text)
 
-        # IDFC uses format: "08 Nov 25" not "08/11/25"
-        # Pattern: DD Mon YY Description Amount DR/CR
-        # Example: 08 Nov 25 CALIFORNIA BURRITO, HYDERABAD 216.00 DR
-        pattern = r"(\d{2}\s+[A-Z][a-z]{2}\s+\d{2})\s+(.+?)\s+([\d,]+\.\d{2})\s+(DR|CR)"
+        # IDFC transactions can appear in 2 formats:
+        # 1) Single-line: "08 Nov 25 SOME MERCHANT 216.00 DR"
+        # 2) Multi-line (common in newer PDFs):
+        #      "MERCHANT NAME,"
+        #      "02 Mar 26 1,099.54 DR"
+        #      "CITY"
+        line_pattern = r"^(\d{2}\s+[A-Z][a-z]{2}\s+\d{2})\s+(.+?)\s+([\d,]+\.\d{2})\s+(DR|CR)\s*$"
+        date_amt_only = r"^(\d{2}\s+[A-Z][a-z]{2}\s+\d{2})\s+([\d,]+\.\d{2})\s+(DR|CR)\s*$"
 
-        for match in re.findall(pattern, full_text):
-            date_str, desc, amount, txn_type = match
+        lines = [ln.strip() for ln in full_text.splitlines() if ln and ln.strip()]
+        i = 0
+        while i < len(lines):
+            ln = lines[i]
 
-            # Convert "08 Nov 25" to "08/11/2025"
-            date_obj = datetime.strptime(date_str, "%d %b %y")
-            date = date_obj.strftime("%d/%m/%Y")
+            m = re.match(line_pattern, ln)
+            if m:
+                date_str, desc, amount, txn_type = m.groups()
+                date_obj = datetime.strptime(date_str, "%d %b %y")
+                date = date_obj.strftime("%d/%m/%Y")
+                amount_f = float(amount.replace(",", ""))
+                if txn_type == "CR":
+                    amount_f = -amount_f
+                transactions.append(
+                    {
+                        "Period": period,
+                        "Account": "IDFC FIRST CC",
+                        "Date": date,
+                        "Description": clean_description(desc),
+                        "Amount": amount_f,
+                        "Type": txn_type,
+                    }
+                )
+                i += 1
+                continue
 
-            amount = float(amount.replace(",", ""))
+            m2 = re.match(date_amt_only, ln)
+            if m2:
+                date_str, amount, txn_type = m2.groups()
+                # Use previous line as description (merchant), and optionally append next line if it looks like a city.
+                desc_parts = []
+                if i - 1 >= 0:
+                    prev = lines[i - 1]
+                    # Avoid section headings.
+                    if not re.match(r"^(Purchases|Payments|YOUR|Transaction|Card Number)", prev, re.I):
+                        desc_parts.append(prev)
+                if i + 1 < len(lines):
+                    nxt = lines[i + 1]
+                    if len(nxt) <= 40 and re.fullmatch(r"[A-Z\s\.\-&]+", nxt):
+                        desc_parts.append(nxt)
+                        i += 1  # consume next line
 
-            # CR means payment/refund - make it negative
-            if txn_type == "CR":
-                amount = -amount
+                desc = clean_description(" ".join(desc_parts).strip())
+                if desc:
+                    date_obj = datetime.strptime(date_str, "%d %b %y")
+                    date = date_obj.strftime("%d/%m/%Y")
+                    amount_f = float(amount.replace(",", ""))
+                    if txn_type == "CR":
+                        amount_f = -amount_f
+                    transactions.append(
+                        {
+                            "Period": period,
+                            "Account": "IDFC FIRST CC",
+                            "Date": date,
+                            "Description": desc,
+                            "Amount": amount_f,
+                            "Type": txn_type,
+                        }
+                    )
+                i += 1
+                continue
 
-            transactions.append({
-                "Period": period,
-                "Account": "IDFC FIRST CC",
-                "Date": date,
-                "Description": clean_description(desc),
-                "Amount": amount,
-                "Type": txn_type
-            })
+            i += 1
 
     return transactions

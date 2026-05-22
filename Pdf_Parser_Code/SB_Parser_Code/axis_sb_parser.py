@@ -13,7 +13,7 @@ PROJECT_DIR = os.path.expanduser(
 )
 BASE_DIR = os.path.join(PROJECT_DIR, "Bank_Statements", "SB_Statements")
 OUTPUT_FILE = os.path.join(PROJECT_DIR, "Output", "axis_summary.xlsx")
-TEMPLATE_FILE = os.path.join(PROJECT_DIR, "Reference Documents", "axis_summary_template.xlsx")
+TEMPLATE_FILE = os.path.join(PROJECT_DIR, "Reference Documents", "template file", "axis_sb_template.xlsx")
 
 
 def clean_text(value):
@@ -323,14 +323,14 @@ def write_output_from_template(df, summary_df):
     return True
 
 
-
 def main():
     print("=" * 70)
     print("AXIS SB PARSER")
     print("=" * 70)
 
     pdf_paths = []
-    for root, _, files in os.walk(BASE_DIR):
+    for root, dirs, files in os.walk(BASE_DIR):
+        dirs[:] = [d for d in dirs if d.lower() not in {"archive", "archived"}]
         for f in files:
             if f.lower().endswith(".pdf"):
                 pdf_paths.append(os.path.join(root, f))

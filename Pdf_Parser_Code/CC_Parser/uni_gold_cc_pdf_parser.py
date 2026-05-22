@@ -20,7 +20,7 @@ def extract_period(text):
         return dt.strftime("%b-%y")
     
     # Alternative: "Statement Date: 14/11/2025"
-    match = re.search(r"Statement Date[:\-]?\s*(\d{2}/\d{2}/\d{4})", text)
+    match = re.search(r"Statement Date\s*[:\-]?\s*(\d{2}/\d{2}/\d{4})", text)
     if match:
         dt = datetime.strptime(match.group(1), "%d/%m/%Y")
         return dt.strftime("%b-%y")
@@ -44,40 +44,61 @@ def parse_uni_gold_cc_pdf(pdf_path):
 
         period = extract_period(full_text)
 
-        # Pattern for lines like:
+        # Pattern A (older format):
         # 01/11/2025 CCCPL FRONT OFFICE II HYDERABAD IN DEBIT ₹1,79,520
-        pattern = re.compile(
-            r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(DEBIT|CREDIT)\s+₹([\d,]+(?:\.\d{2})?)"
+        pattern_a = re.compile(
+            r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(DEBIT|CREDIT)\s+₹([\d,]+(?:\.\d{2})?)",
+            re.IGNORECASE,
         )
 
-        matches = pattern.findall(full_text)
+        # Pattern B (newer BOBCARD/UNI statements):
+        # 16/01/2026 R1673Z UPI-ZEPTO MARKETPLACE PRIVATE INR 1,020.00 1,020.00 DR
+        # There are often two amount columns; the last amount before DR/CR is the transaction amount.
+        pattern_b = re.compile(
+            r"(\d{2}/\d{2}/\d{4})\s+([A-Z0-9]+)\s+(.+?)\s+INR\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+(DR|CR)\b",
+            re.IGNORECASE,
+        )
 
-        for match in matches:
-            date = match[0]
-            description = match[1].strip()
-            txn_type = match[2]
-            amount = match[3]
-
-            # Clean amount
-            amount_clean = amount.replace(",", "")
-            
+        def _to_float(s):
             try:
-                amount_val = float(amount_clean)
-            except:
+                return float(str(s).replace(",", ""))
+            except Exception:
+                return None
+
+        for date, desc, txn_type, amount in pattern_a.findall(full_text):
+            amount_val = _to_float(amount)
+            if amount_val is None:
                 continue
-
-            # CREDIT means payment/refund - make it negative
-            if txn_type == "CREDIT":
+            if str(txn_type).upper() == "CREDIT":
                 amount_val = -amount_val
+            transactions.append(
+                {
+                    "Period": period,
+                    "Account": "Uni Gold Card",
+                    "Date": date,
+                    "Description": clean_description(desc.strip()),
+                    "Amount": amount_val,
+                    "Type": "Dr" if str(txn_type).upper() == "DEBIT" else "Cr",
+                }
+            )
 
-            transactions.append({
-                "Period": period,
-                "Account": "Uni Gold Card",
-                "Date": date,
-                "Description": clean_description(description),
-                "Amount": amount_val,
-                "Type": "Dr" if txn_type == "DEBIT" else "Cr"
-            })
+        for date, _ref, desc, _src_amt, amt, drcr in pattern_b.findall(full_text):
+            amount_val = _to_float(amt)
+            if amount_val is None:
+                continue
+            drcr_u = str(drcr).upper()
+            if drcr_u == "CR":
+                amount_val = -amount_val
+            transactions.append(
+                {
+                    "Period": period,
+                    "Account": "Uni Gold Card",
+                    "Date": date,
+                    "Description": clean_description(desc.strip()),
+                    "Amount": amount_val,
+                    "Type": "Dr" if drcr_u == "DR" else "Cr",
+                }
+            )
 
     except Exception as e:
         print(f"❌ Error parsing Uni Gold PDF: {e}")

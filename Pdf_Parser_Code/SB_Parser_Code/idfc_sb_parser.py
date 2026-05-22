@@ -6,12 +6,71 @@ from datetime import datetime
 import pandas as pd
 import pdfplumber
 from openpyxl import load_workbook
+from openpyxl.styles import Border, Font, PatternFill, Side
 
 PROJECT_DIR = os.path.expanduser(
     "~/Library/CloudStorage/OneDrive-Personal/Personal/Finance/projects/Monthly_Fin_Tracker"
 )
 BASE_DIR = os.path.join(PROJECT_DIR, "Bank_Statements", "SB_Statements")
 OUTPUT_FILE = os.path.join(PROJECT_DIR, "Output", "idfc_summary.xlsx")
+TEMPLATE_FILE = os.path.join(PROJECT_DIR, "Reference Documents", "template file", "idfc_sb_template.xlsx")
+
+
+def clear_range(ws, max_col, from_row=1):
+    max_row = ws.max_row
+    if max_row < from_row:
+        return
+    for r in range(from_row, max_row + 1):
+        for c in range(1, max_col + 1):
+            ws.cell(r, c).value = None
+
+
+def write_df_to_sheet(ws, df, max_col):
+    clear_range(ws, max_col=max_col, from_row=1)
+    header_fill = PatternFill(fill_type="solid", fgColor="F4B183")
+    header_font = Font(bold=True)
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    amt_fmt = "#,##0.00"
+    for c, col in enumerate(df.columns, start=1):
+        cell = ws.cell(row=1, column=c, value=col)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.border = border
+    numeric_cols = {"Amount", "Balance"}
+    for r in range(2, len(df) + 2):
+        for c, col in enumerate(df.columns, start=1):
+            val = df.iloc[r - 2, c - 1]
+            cell = ws.cell(row=r, column=c)
+            if pd.isna(val):
+                cell.value = None
+            elif col in numeric_cols:
+                try:
+                    cell.value = float(val)
+                    cell.number_format = amt_fmt
+                except Exception:
+                    cell.value = val
+            else:
+                cell.value = val
+            cell.border = border
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{chr(64 + len(df.columns))}{max(1, len(df) + 1)}"
+
+
+def write_output_from_template(df, summary_df):
+    if not os.path.exists(TEMPLATE_FILE):
+        return False
+    wb = load_workbook(TEMPLATE_FILE)
+    ws_txn = wb["IDFC Transactions"] if "IDFC Transactions" in wb.sheetnames else wb.create_sheet("IDFC Transactions")
+    ws_summary = (
+        wb["IDFC Categorized Summary"]
+        if "IDFC Categorized Summary" in wb.sheetnames
+        else wb.create_sheet("IDFC Categorized Summary")
+    )
+    write_df_to_sheet(ws_txn, df, max_col=6)
+    write_df_to_sheet(ws_summary, summary_df, max_col=10)
+    wb.save(OUTPUT_FILE)
+    return True
 
 
 def clean_text(value):
@@ -106,18 +165,43 @@ def is_idfc_pdf(pdf_path):
 def detect_idfc_account_name(pdf_path):
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            txt = "\n".join((p.extract_text() or "") for p in pdf.pages[:2]).upper()
+            txt_raw = "\n".join((p.extract_text() or "") for p in pdf.pages[:2])
     except Exception:
         return "IDFC"
-    if "PRIYANKA JAIN" in txt:
+    txt_u = (txt_raw or "").upper()
+
+    # Prefer lookup from "Bank Name map" sheet (whitespace-insensitive).
+    try:
+        mapping_file = resolve_mapping_file()
+        df = pd.read_excel(mapping_file, sheet_name="Bank Name map")
+        cols = list(df.columns)
+        if len(cols) >= 3:
+            df = df.rename(columns={cols[0]: "Bank PDF", cols[1]: "Text", cols[2]: "Output"})
+        pdf_comp = re.sub(r"\s+", "", txt_u)
+        for _, row in df.iterrows():
+            bank_pdf = clean_text(row.get("Bank PDF", ""))
+            if bank_pdf.lower() != "idfc":
+                continue
+            needle = clean_text(row.get("Text", ""))
+            output = clean_text(row.get("Output", ""))
+            if not needle or not output:
+                continue
+            if re.sub(r"\s+", "", needle.upper()) in pdf_comp:
+                return output
+    except Exception:
+        pass
+
+    if "PRIYANKA JAIN" in txt_u:
         return "PJ IDFC"
-    if "ABHISHEK JAIN" in txt:
+    if "ABHISHEK JAIN" in txt_u:
         return "AJ IDFC"
     return "IDFC"
 
 
 def is_noise_line(line):
     u = line.upper()
+    if u.startswith("•"):
+        return True
     return any(
         x in u
         for x in (
@@ -136,10 +220,6 @@ def is_noise_line(line):
             "MICR ",
             "ACCOUNT STATUS",
             "CURRENCY INR",
-            "RAIPUR",
-            "TOWER",
-            "COLLEGE",
-            "ROAD",
             "ACCOUNT OPENING DATE",
             "REGISTERED OFFICE",
             "PAGE ",
@@ -148,6 +228,7 @@ def is_noise_line(line):
             "DATE AND TIME VALUE DATE",
             "REF/CHEQUE",
             "(INR)",
+            "IMPORTANT MESSAGE",
         )
     )
 
@@ -159,18 +240,40 @@ def is_txn_prefix_line(line):
     ) is not None
 
 
+def is_txn_datetime_line(line):
+    return (
+        re.match(
+            r"^\d{2}\s+[A-Za-z]{3}\s+\d{2}\s+\d{2}:\d{2}\s+\d{2}\s+[A-Za-z]{3}\s+\d{2}\b",
+            line,
+        )
+        is not None
+    )
+
+
+def looks_like_txn_ref_fragment(line):
+    # Fragments like "IFT/...", "IMPS/...", "NEFT/..." can be the start of
+    # the next transaction description when they appear immediately before
+    # the next datetime row.
+    return re.match(r"^[A-Za-z]{2,10}/[A-Za-z0-9]", line) is not None
+
+
 def append_fragment(desc, frag):
     desc = clean_text(desc)
     frag = clean_text(frag)
     if not frag:
         return desc
-    if (
-        desc
-        and " " not in frag
-        and re.search(r"[A-Za-z]$", desc)
-        and re.match(r"^[a-z]{3,}[A-Za-z0-9/-]*$", frag)
-    ):
+    # Join tokenized references that are visually wrapped across lines, e.g.
+    # "...000420" + "87/PRIYANKA..." => "...00042087/PRIYANKA..."
+    if desc and re.search(r"\d$", desc) and re.match(r"^\d{1,4}/", frag):
         return f"{desc}{frag}"
+    if desc and " " not in frag:
+        last = desc[-1]
+        first = frag[0]
+        if last == "-":
+            return f"{desc[:-1]}{frag}"
+        if last.isalpha() and first.isalpha():
+            if first.islower() or last.islower():
+                return f"{desc}{frag}"
     return f"{desc} {frag}".strip()
 
 
@@ -179,6 +282,7 @@ def parse_idfc_transactions(pdf_path):
     prev_balance = None
     carry_prefix = []
     current_txn = None
+    collect_next_prefix_continuation = False
 
     def flush_current():
         nonlocal current_txn, prev_balance
@@ -247,31 +351,58 @@ def parse_idfc_transactions(pdf_path):
         for page in pdf.pages:
             text = page.extract_text() or ""
             lines = [clean_text(l) for l in text.split("\n") if clean_text(l)]
-            for line in lines:
+            i = 0
+            while i < len(lines):
+                line = lines[i]
                 if re.search(r"\bopening balance\b", line, re.I):
                     nums = re.findall(r"\d{1,3}(?:,\d{2,3})*\.\d{2}", line)
                     if nums:
                         prev_balance = parse_amount(nums[-1])
+                    i += 1
                     continue
 
                 if is_noise_line(line):
+                    i += 1
                     continue
 
-                if re.match(r"^\d{2}\s+[A-Za-z]{3}\s+\d{2}\s+\d{2}:\d{2}\s+\d{2}\s+[A-Za-z]{3}\s+\d{2}\b", line):
+                if is_txn_datetime_line(line):
                     flush_current()
                     current_txn = {"pre": carry_prefix, "line": line, "post": []}
                     carry_prefix = []
+                    collect_next_prefix_continuation = False
+                    i += 1
                     continue
 
                 if current_txn is not None:
+                    next_line = lines[i + 1] if i + 1 < len(lines) else ""
+                    # Some IDFC rows split card-payment narration across lines where the
+                    # first fragment appears just before the next datetime row.
+                    if line.lower().startswith("payment towards") and is_txn_datetime_line(next_line):
+                        carry_prefix.append(line)
+                        collect_next_prefix_continuation = True
+                        i += 1
+                        continue
+                    if collect_next_prefix_continuation:
+                        carry_prefix.append(line)
+                        i += 1
+                        continue
+                    if looks_like_txn_ref_fragment(line) and is_txn_datetime_line(next_line):
+                        carry_prefix.append(line)
+                        i += 1
+                        continue
                     if is_txn_prefix_line(line):
                         carry_prefix.append(line)
+                        collect_next_prefix_continuation = True
                     else:
                         current_txn["post"].append(line)
                 elif is_txn_prefix_line(line):
                     carry_prefix.append(line)
+                    collect_next_prefix_continuation = True
+                i += 1
 
-    flush_current()
+            # Flush at page boundary so footer/legal content on later pages
+            # cannot be appended to the last transaction description.
+            flush_current()
     return records
 
 
@@ -281,62 +412,83 @@ def load_idfc_mapping_rules():
     sheet_name = "SB Mapping" if "SB Mapping" in wb.sheetnames else "SB Merchant category mapping"
     ws = wb[sheet_name]
 
-    map_i_col = clean_text(ws.cell(row=1, column=9).value) or "Map Col I"
-    map_j_col = clean_text(ws.cell(row=1, column=10).value) or "Map Col J"
+    headers = [clean_text(ws.cell(row=1, column=c).value) for c in range(1, ws.max_column + 1)]
+    header_to_col = {h: i + 1 for i, h in enumerate(headers) if h}
+
+    def col(name):
+        return header_to_col.get(name, 0)
+
+    bank_col = col("Bank")
+    keyword_col = col("Keyword Pattern")
+    mode_col = col("Mode")
+    exp_col = col("Expense Type")
+    merch_col = col("Merchant Category")
+    store_col = col("Store Name")
+    direction_col = col("Direction")
+    priority_col = col("Priority")
+
+    if not all([bank_col, keyword_col, mode_col, exp_col, merch_col, store_col]):
+        raise ValueError("SB Mapping is missing one or more required columns for IDFC parser")
+
+    map_i_col = "Map Col I"
+    map_j_col = "Map Col J"
 
     idfc_rules = []
     default_rules = []
     default_fallback = ("", "", "Uncategorized", "Uncategorized", "Uncategorized", "Unknown")
 
     for r in range(2, ws.max_row + 1):
-        bank = clean_text(ws.cell(row=r, column=1).value).lower()
-        keyword = clean_text(ws.cell(row=r, column=2).value)
+        bank = clean_text(ws.cell(row=r, column=bank_col).value).lower()
+        keyword = clean_text(ws.cell(row=r, column=keyword_col).value)
+        direction = clean_text(ws.cell(row=r, column=direction_col).value).upper() if direction_col else "ANY"
+        if direction not in {"IN", "OUT", "ANY"}:
+            direction = "ANY"
+        priority_raw = clean_text(ws.cell(row=r, column=priority_col).value) if priority_col else ""
+        try:
+            priority = int(float(priority_raw)) if priority_raw else 0
+        except Exception:
+            priority = 0
         mapped = (
-            clean_text(ws.cell(row=r, column=9).value),
-            clean_text(ws.cell(row=r, column=10).value),
-            clean_text(ws.cell(row=r, column=3).value) or "Uncategorized",
-            clean_text(ws.cell(row=r, column=4).value) or "Uncategorized",
-            clean_text(ws.cell(row=r, column=5).value) or "Uncategorized",
-            clean_text(ws.cell(row=r, column=6).value) or "Unknown",
+            "",
+            "",
+            clean_text(ws.cell(row=r, column=mode_col).value) or "Uncategorized",
+            clean_text(ws.cell(row=r, column=exp_col).value) or "Uncategorized",
+            clean_text(ws.cell(row=r, column=merch_col).value) or "Uncategorized",
+            clean_text(ws.cell(row=r, column=store_col).value) or "Unknown",
         )
 
         if bank == "idfc" and keyword:
-            idfc_rules.append((keyword.lower(),) + mapped)
+            idfc_rules.append((keyword.lower(), direction, priority) + mapped)
         elif bank == "default" and keyword:
-            default_rules.append((keyword.lower(),) + mapped)
+            default_rules.append((keyword.lower(), direction, priority) + mapped)
         elif bank == "default" and not keyword:
             default_fallback = mapped
 
     return idfc_rules, default_rules, default_fallback, map_i_col, map_j_col
 
 
-def resolve_directional_mapping(matches, amount):
-    if amount is None or not matches:
-        return matches[0]
-    is_withdrawal = amount < 0
-    for item in matches:
-        _, map_i_val, map_j_val, mode, exp_type, merch_cat, store_name = item
-        txt = f"{map_i_val} {map_j_val} {mode} {exp_type} {merch_cat} {store_name}".lower()
-        if is_withdrawal and re.search(r"\bsbi\b.*\bto\b.*\bidfc\b", txt):
-            return item
-        if (not is_withdrawal) and re.search(r"\bidfc\b.*\bto\b.*\bsbi\b", txt):
-            return item
-    return matches[0]
+def direction_from_amount(amount):
+    if amount is None:
+        return "ANY"
+    return "OUT" if amount < 0 else "IN"
 
 
 def _match_from_rules(description, amount, rules):
     desc = clean_text(description).lower()
     desc_norm = normalize_match_text(desc)
+    txn_direction = direction_from_amount(amount)
     matches = []
-    for keyword, map_i_val, map_j_val, mode, exp_type, merch_cat, store_name in rules:
+    for idx, (keyword, direction, priority, map_i_val, map_j_val, mode, exp_type, merch_cat, store_name) in enumerate(rules):
         key_norm = normalize_match_text(keyword)
         if not key_norm:
             continue
+        if direction not in {"ANY", txn_direction}:
+            continue
         if keyword in desc or key_norm in desc_norm or unordered_token_match(keyword, desc):
-            matches.append((keyword, map_i_val, map_j_val, mode, exp_type, merch_cat, store_name))
+            matches.append((priority, -idx, map_i_val, map_j_val, mode, exp_type, merch_cat, store_name))
     if matches:
-        chosen = resolve_directional_mapping(matches, amount)
-        _, map_i_val, map_j_val, mode, exp_type, merch_cat, store_name = chosen
+        chosen = max(matches)
+        _, _, map_i_val, map_j_val, mode, exp_type, merch_cat, store_name = chosen
         return map_i_val, map_j_val, mode, exp_type, merch_cat, store_name
     return None
 
@@ -359,6 +511,7 @@ def format_sheet(workbook, worksheet, df):
     header_fmt = workbook.add_format({"bold": True, "bg_color": "#F4B183", "border": 1})
     cell_fmt = workbook.add_format({"border": 1})
     amt_fmt = workbook.add_format({"border": 1, "num_format": "#,##0.00"})
+    amt_red_neg_fmt = workbook.add_format({"border": 1, "num_format": "#,##0.00;[Red]-#,##0.00"})
 
     for c, col in enumerate(df.columns):
         worksheet.write(0, c, col, header_fmt)
@@ -371,7 +524,10 @@ def format_sheet(workbook, worksheet, df):
                 worksheet.write_blank(r, c, None, cell_fmt)
             elif col in numeric_cols:
                 try:
-                    worksheet.write_number(r, c, float(val), amt_fmt)
+                    if col == "Amount":
+                        worksheet.write_number(r, c, float(val), amt_red_neg_fmt)
+                    else:
+                        worksheet.write_number(r, c, float(val), amt_fmt)
                 except Exception:
                     worksheet.write(r, c, val, cell_fmt)
             else:
@@ -392,7 +548,8 @@ def main():
     print("=" * 70)
 
     pdf_paths = []
-    for root, _, files in os.walk(BASE_DIR):
+    for root, dirs, files in os.walk(BASE_DIR):
+        dirs[:] = [d for d in dirs if d.lower() not in {"archive", "archived"}]
         for f in files:
             if f.lower().endswith(".pdf"):
                 pdf_paths.append(os.path.join(root, f))
@@ -437,12 +594,13 @@ def main():
         axis=1,
     )
 
-    with pd.ExcelWriter(OUTPUT_FILE, engine="xlsxwriter") as writer:
-        df.to_excel(writer, sheet_name="IDFC Transactions", index=False)
-        summary_df.to_excel(writer, sheet_name="IDFC Categorized Summary", index=False)
-        wb = writer.book
-        format_sheet(wb, writer.sheets["IDFC Transactions"], df)
-        format_sheet(wb, writer.sheets["IDFC Categorized Summary"], summary_df)
+    if not write_output_from_template(df, summary_df):
+        with pd.ExcelWriter(OUTPUT_FILE, engine="xlsxwriter") as writer:
+            df.to_excel(writer, sheet_name="IDFC Transactions", index=False)
+            summary_df.to_excel(writer, sheet_name="IDFC Categorized Summary", index=False)
+            wb = writer.book
+            format_sheet(wb, writer.sheets["IDFC Transactions"], df)
+            format_sheet(wb, writer.sheets["IDFC Categorized Summary"], summary_df)
 
     print("\n" + "=" * 70)
     print("Completed")

@@ -489,7 +489,8 @@ def main():
     print("=" * 70)
 
     pdf_paths = []
-    for root, _, files in os.walk(BASE_DIR):
+    for root, dirs, files in os.walk(BASE_DIR):
+        dirs[:] = [d for d in dirs if d.lower() not in {"archive", "archived"}]
         for f in files:
             if f.lower().endswith(".pdf"):
                 pdf_paths.append(os.path.join(root, f))
