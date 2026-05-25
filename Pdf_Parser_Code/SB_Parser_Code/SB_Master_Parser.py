@@ -35,8 +35,10 @@ def parse_date(value):
     for fmt in (
         "%d-%m-%Y",
         "%d/%m/%Y",
+        "%d.%m.%Y",
         "%d-%m-%y",
         "%d/%m/%y",
+        "%d.%m.%y",
         "%d %b %y",
         "%d %b %Y",
         "%d-%b-%Y",
@@ -99,7 +101,7 @@ def extract_period(text, bank_name):
         if m:
             return format_period_from_date(parse_date(m.group(1)))
     if bank_name == "ICICI":
-        m = re.search(r"period\s+([A-Za-z]+\s+\d{2},\s+\d{4})\s*-\s*([A-Za-z]+\s+\d{2},\s+\d{4})", text, re.I)
+        m = re.search(r"period\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})\s*-\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})", text, re.I)
         if m:
             try:
                 end = datetime.strptime(m.group(2), "%B %d, %Y").date()
@@ -734,7 +736,8 @@ def detect_pdf_context(pdf_path):
                 text += "\n" + (page.extract_text() or "")
     except Exception:
         return {"bank": None, "customer_name": None}
-    bank = bank_from_path or detect_bank_from_text(text)
+    bank_from_text = detect_bank_from_text(text)
+    bank = bank_from_text or bank_from_path
     t = text.upper()
     customer_name = None
     if "PRIYANKA JAIN" in t:
@@ -1097,8 +1100,43 @@ def parse_icici(pdf_path):
                         "Description": desc,
                         "Amount": amount,
                         "Balance": balance,
-                    }
-                )
+                        }
+                    )
+        if not records:
+            # Alternate ICICI layout:
+            # "Statement of Transactions in Saving Account ...", text row like:
+            # 1 30.03.2026 100901502072:Int.Pd:31-12-2025 to 29-03-2026 5.00 835.69
+            seen = set()
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                for raw in text.split("\n"):
+                    line = clean_text(raw)
+                    m = re.match(
+                        r"^(?:\d+\s+)?(\d{2}\.\d{2}\.\d{4})\s+(.+?)\s+([0-9,]+\.\d{2})\s+([0-9,]+\.\d{2})\s*$",
+                        line,
+                    )
+                    if not m:
+                        continue
+                    date_s, desc, amount_s, balance_s = m.groups()
+                    date = parse_date(date_s)
+                    amount = parse_amount(amount_s)
+                    balance = parse_amount(balance_s)
+                    if not date or amount is None:
+                        continue
+                    key = (date, desc, amount, balance)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    records.append(
+                        {
+                            "Period": period,
+                            "Account": "ICICI",
+                            "Date": date,
+                            "Description": desc,
+                            "Amount": amount,
+                            "Balance": balance,
+                        }
+                    )
     return records
 
 
@@ -1858,7 +1896,7 @@ def main():
     for pdf_path in pdf_paths:
         print(f"\\n📄 Processing: {os.path.basename(pdf_path)}")
         ctx = detect_pdf_context(pdf_path)
-        parser = get_parser(pdf_path) or get_parser_by_bank(ctx["bank"])
+        parser = get_parser_by_bank(ctx["bank"]) or get_parser(pdf_path)
         if not parser:
             print("   ⚠️ No parser found for this file")
             continue
